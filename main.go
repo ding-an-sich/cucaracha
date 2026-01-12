@@ -49,6 +49,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if startTime.Unix() < 0 {
+		fmt.Fprintln(os.Stderr, "Error: start time must be after 1970-01-01")
+		os.Exit(1)
+	}
+
 	cfg := Config{
 		Brokers:   strings.Split(brokers, ","),
 		Topic:     topic,

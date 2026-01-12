@@ -65,6 +65,9 @@ func consumePartition(ctx context.Context, cfg Config, partition int, dedup *Ded
 	}
 
 	count := 0
+
+	fmt.Printf("Consuming partition %d from offset %d", partition, reader.Offset())
+
 	for {
 		if limit > 0 && count >= limit {
 			break
