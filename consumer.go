@@ -12,20 +12,26 @@ import (
 func Consume(ctx context.Context, cfg Config) (Result, error) {
 	dedup := NewDeduplicator()
 
-	partitions, err := getPartitions(cfg)
+	conn, err := kafka.Dial("tcp", cfg.Brokers[0])
+	if err != nil {
+		return Result{}, fmt.Errorf("failed to dial broker: %w", err)
+	}
+	defer conn.Close()
+
+	partitions, err := conn.ReadPartitions(cfg.Topic)
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to get partitions: %w", err)
 	}
 
 	count := 0
-	for _, partition := range partitions {
+	for _, p := range partitions {
 		if cfg.Limit > 0 && count >= cfg.Limit {
 			break
 		}
 
-		n, err := consumePartition(ctx, cfg, partition, dedup, cfg.Limit-count)
+		n, err := consumePartition(ctx, cfg, p, dedup, cfg.Limit-count)
 		if err != nil {
-			return Result{}, fmt.Errorf("failed to consume partition %d: %w", partition, err)
+			return Result{}, fmt.Errorf("failed to consume partition %d: %w", p.ID, err)
 		}
 		count += n
 	}
@@ -33,38 +39,34 @@ func Consume(ctx context.Context, cfg Config) (Result, error) {
 	return dedup.Results(cfg), nil
 }
 
-func getPartitions(cfg Config) ([]int, error) {
-	conn, err := kafka.Dial("tcp", cfg.Brokers[0])
+func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup *Deduplicator, limit int) (int, error) {
+	addr := fmt.Sprintf("%s:%d", p.Leader.Host, p.Leader.Port)
+	conn, err := kafka.DialLeader(ctx, "tcp", addr, cfg.Topic, p.ID)
 	if err != nil {
-		return nil, err
+		return 0, fmt.Errorf("failed to dial partition leader: %w", err)
 	}
 	defer conn.Close()
 
-	partitionList, err := conn.ReadPartitions(cfg.Topic)
+	startOffset, err := conn.ReadOffset(cfg.StartTime)
 	if err != nil {
-		return nil, err
+		return 0, fmt.Errorf("failed to read offset at start time: %w", err)
 	}
 
-	partitions := make([]int, len(partitionList))
-	for i, p := range partitionList {
-		partitions[i] = p.ID
-	}
-	return partitions, nil
-}
-
-func consumePartition(ctx context.Context, cfg Config, partition int, dedup *Deduplicator, limit int) (int, error) {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:   cfg.Brokers,
-		Topic:     cfg.Topic,
-		Partition: partition,
-	})
-	defer reader.Close()
-
-	if err := reader.SetOffsetAt(ctx, cfg.StartTime); err != nil {
-		return 0, fmt.Errorf("failed to set offset at start time: %w", err)
+	endOffset, err := conn.ReadLastOffset()
+	if err != nil {
+		return 0, fmt.Errorf("failed to read last offset: %w", err)
 	}
 
-	fmt.Printf("Consuming partition %d from offset %d\n", partition, reader.Offset())
+	if startOffset >= endOffset {
+		return 0, nil
+	}
+
+	_, err = conn.Seek(startOffset, kafka.SeekAbsolute)
+	if err != nil {
+		return 0, fmt.Errorf("failed to seek to start offset: %w", err)
+	}
+
+	fmt.Printf("Consuming partition %d from offset %d\n", p.ID, startOffset)
 
 	count := 0
 	for {
@@ -72,26 +74,42 @@ func consumePartition(ctx context.Context, cfg Config, partition int, dedup *Ded
 			break
 		}
 
-		lag, _ := reader.ReadLag(ctx)
+		batch := conn.ReadBatch(1, 1e6) // min 1 byte, max 1MB
+		for {
+			msg, err := batch.ReadMessage()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				batch.Close()
+				return count, err
+			}
 
-		if lag == 0 {
-			break
-		}
-
-		msg, err := reader.ReadMessage(ctx)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if msg.Offset >= endOffset {
 				break
 			}
-			return count, err
+
+			if msg.Time.After(cfg.EndTime) {
+				batch.Close()
+				return count, nil
+			}
+
+			dedup.Add(msg.Value, msg.Partition, msg.Offset, msg.Time)
+			count++
+
+			if limit > 0 && count >= limit {
+				break
+			}
 		}
 
-		if msg.Time.After(cfg.EndTime) {
+		if err := batch.Close(); err != nil {
+			return count, fmt.Errorf("failed to close batch: %w", err)
+		}
+
+		currentOffset, _ := conn.Seek(0, kafka.SeekCurrent)
+		if currentOffset >= endOffset {
 			break
 		}
-
-		dedup.Add(msg.Value, msg.Partition, msg.Offset, msg.Time)
-		count++
 	}
 
 	return count, nil
