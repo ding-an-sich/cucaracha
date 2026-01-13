@@ -45,11 +45,7 @@ func (d *Deduplicator) Results(cfg Config) Result {
 	}
 
 	return Result{
-		Topic: cfg.Topic,
-		TimeRange: TimeRange{
-			Start: cfg.StartTime,
-			End:   cfg.EndTime,
-		},
+		Topic:           cfg.Topic,
 		MessagesRead:    totalMessages,
 		UniqueMessages:  uniqueCount,
 		DuplicateGroups: len(duplicates),

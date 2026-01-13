@@ -25,11 +25,7 @@ func Consume(ctx context.Context, cfg Config) (Result, error) {
 
 	count := 0
 	for _, p := range partitions {
-		if cfg.Limit > 0 && count >= cfg.Limit {
-			break
-		}
-
-		n, err := consumePartition(ctx, cfg, p, dedup, cfg.Limit-count)
+		n, err := consumePartition(ctx, cfg, p, dedup)
 		if err != nil {
 			return Result{}, fmt.Errorf("failed to consume partition %d: %w", p.ID, err)
 		}
@@ -39,7 +35,7 @@ func Consume(ctx context.Context, cfg Config) (Result, error) {
 	return dedup.Results(cfg), nil
 }
 
-func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup *Deduplicator, limit int) (int, error) {
+func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup *Deduplicator) (int, error) {
 	addr := fmt.Sprintf("%s:%d", p.Leader.Host, p.Leader.Port)
 	conn, err := kafka.DialLeader(ctx, "tcp", addr, cfg.Topic, p.ID)
 	if err != nil {
@@ -47,30 +43,29 @@ func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup 
 	}
 	defer conn.Close()
 
-	startOffset, err := conn.ReadOffset(cfg.StartTime)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read offset at start time: %w", err)
-	}
+	startingOffset := cfg.StartingOffset
+	endingOffset := cfg.EndOffset
+	lastOffset, err := conn.ReadLastOffset()
 
-	endOffset, err := conn.ReadLastOffset()
 	if err != nil {
 		return 0, fmt.Errorf("failed to read last offset: %w", err)
 	}
 
-	if startOffset >= endOffset {
+	if startingOffset >= lastOffset {
 		return 0, nil
 	}
 
-	_, err = conn.Seek(startOffset, kafka.SeekAbsolute)
+	_, err = conn.Seek(cfg.StartingOffset, kafka.SeekAbsolute)
 	if err != nil {
 		return 0, fmt.Errorf("failed to seek to start offset: %w", err)
 	}
 
-	fmt.Printf("Consuming partition %d from offset %d\n", p.ID, startOffset)
+	fmt.Printf("Consuming partition %d from offset %d until offset %d\n", p.ID, startingOffset, endingOffset)
+	fmt.Printf("Last offset is %d\n", lastOffset)
 
 	count := 0
 	for {
-		batch := conn.ReadBatch(1, 1e6) // min 1 byte, max 1MB
+		batch := conn.ReadBatch(1, 5e6) // min 1 byte, max 5MB
 		done := false
 		var readErr error
 
@@ -83,7 +78,7 @@ func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup 
 				break
 			}
 
-			if msg.Offset >= endOffset || msg.Time.After(cfg.EndTime) || (limit > 0 && count >= limit) {
+			if msg.Offset >= endingOffset {
 				done = true
 				break
 			}
@@ -102,7 +97,7 @@ func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup 
 		}
 
 		currentOffset, _ := conn.Seek(0, kafka.SeekCurrent)
-		if currentOffset >= endOffset {
+		if currentOffset >= endingOffset || currentOffset >= (lastOffset-1) {
 			break
 		}
 	}

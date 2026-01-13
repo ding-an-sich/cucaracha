@@ -3,11 +3,10 @@ package main
 import "time"
 
 type Config struct {
-	Brokers   []string
-	Topic     string
-	StartTime time.Time
-	EndTime   time.Time
-	Limit     int
+	Brokers        []string
+	Topic          string
+	StartingOffset int64
+	EndOffset      int64
 }
 
 type Occurrence struct {
@@ -29,7 +28,6 @@ type TimeRange struct {
 
 type Result struct {
 	Topic           string      `json:"topic"`
-	TimeRange       TimeRange   `json:"time_range"`
 	MessagesRead    int         `json:"messages_read"`
 	UniqueMessages  int         `json:"unique_messages"`
 	DuplicateGroups int         `json:"duplicate_groups"`
