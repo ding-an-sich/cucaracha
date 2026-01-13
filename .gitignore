@@ -1,4 +1,4 @@
 cucaracha
 .env
 *.test
-docker-compose.yaml
+docker*
