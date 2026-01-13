@@ -64,12 +64,17 @@ func consumePartition(ctx context.Context, cfg Config, partition int, dedup *Ded
 		return 0, fmt.Errorf("failed to set offset at start time: %w", err)
 	}
 
+	fmt.Printf("Consuming partition %d from offset %d\n", partition, reader.Offset())
+
 	count := 0
-
-	fmt.Printf("Consuming partition %d from offset %d", partition, reader.Offset())
-
 	for {
 		if limit > 0 && count >= limit {
+			break
+		}
+
+		lag, _ := reader.ReadLag(ctx)
+
+		if lag == 0 {
 			break
 		}
 
