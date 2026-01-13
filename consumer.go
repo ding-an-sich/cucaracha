@@ -70,40 +70,35 @@ func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup 
 
 	count := 0
 	for {
-		if limit > 0 && count >= limit {
-			break
-		}
-
 		batch := conn.ReadBatch(1, 1e6) // min 1 byte, max 1MB
+		done := false
+		var readErr error
+
 		for {
 			msg, err := batch.ReadMessage()
 			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
+				if !errors.Is(err, io.EOF) {
+					readErr = err
 				}
-				batch.Close()
-				return count, err
-			}
-
-			if msg.Offset >= endOffset {
 				break
 			}
 
-			if msg.Time.After(cfg.EndTime) {
-				batch.Close()
-				return count, nil
+			if msg.Offset >= endOffset || msg.Time.After(cfg.EndTime) || (limit > 0 && count >= limit) {
+				done = true
+				break
 			}
 
 			dedup.Add(msg.Value, msg.Partition, msg.Offset, msg.Time)
 			count++
-
-			if limit > 0 && count >= limit {
-				break
-			}
 		}
 
-		if err := batch.Close(); err != nil {
-			return count, fmt.Errorf("failed to close batch: %w", err)
+		batch.Close()
+
+		if readErr != nil {
+			return count, readErr
+		}
+		if done {
+			break
 		}
 
 		currentOffset, _ := conn.Seek(0, kafka.SeekCurrent)
