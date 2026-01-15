@@ -72,6 +72,11 @@ func consumePartition(dialer *kafka.Dialer, ctx context.Context, cfg Config, p k
 	defer conn.Close()
 
 	firstOffset, err := conn.ReadFirstOffset()
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to read first offset: %w", err)
+	}
+
 	lastOffset, err := conn.ReadLastOffset()
 
 	if err != nil {
