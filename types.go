@@ -3,10 +3,8 @@ package main
 import "time"
 
 type Config struct {
-	Brokers        []string
-	Topic          string
-	StartingOffset int64
-	EndOffset      int64
+	Brokers []string
+	Topic   string
 }
 
 type Occurrence struct {

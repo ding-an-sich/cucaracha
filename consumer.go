@@ -2,17 +2,33 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/scram"
 )
 
 func Consume(ctx context.Context, cfg Config) (Result, error) {
 	dedup := NewDeduplicator()
 
-	conn, err := kafka.Dial("tcp", cfg.Brokers[0])
+	mechanism, err := scram.Mechanism(scram.SHA256, os.Getenv("CUCARACHA_SASL_USERNAME"), os.Getenv("CUCARACHA_SASL_PASS"))
+	if err != nil {
+		panic(err)
+	}
+
+	dialer := &kafka.Dialer{
+		Timeout:       10 * time.Second,
+		DualStack:     true,
+		SASLMechanism: mechanism,
+		TLS:           &tls.Config{},
+	}
+
+	conn, err := dialer.Dial("tcp", cfg.Brokers[0])
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to dial broker: %w", err)
 	}
@@ -25,7 +41,7 @@ func Consume(ctx context.Context, cfg Config) (Result, error) {
 
 	count := 0
 	for _, p := range partitions {
-		n, err := consumePartition(ctx, cfg, p, dedup)
+		n, err := consumePartition(dialer, ctx, cfg, p, dedup)
 		if err != nil {
 			return Result{}, fmt.Errorf("failed to consume partition %d: %w", p.ID, err)
 		}
@@ -35,33 +51,26 @@ func Consume(ctx context.Context, cfg Config) (Result, error) {
 	return dedup.Results(cfg), nil
 }
 
-func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup *Deduplicator) (int, error) {
-	addr := fmt.Sprintf("%s:%d", p.Leader.Host, p.Leader.Port)
-	conn, err := kafka.DialLeader(ctx, "tcp", addr, cfg.Topic, p.ID)
+func consumePartition(dialer *kafka.Dialer, ctx context.Context, cfg Config, p kafka.Partition, dedup *Deduplicator) (int, error) {
+	conn, err := dialer.DialLeader(ctx, "tcp", cfg.Brokers[0], cfg.Topic, p.ID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to dial partition leader: %w", err)
 	}
 	defer conn.Close()
 
-	startingOffset := cfg.StartingOffset
-	endingOffset := cfg.EndOffset
+	firstOffset, err := conn.ReadFirstOffset()
 	lastOffset, err := conn.ReadLastOffset()
 
 	if err != nil {
 		return 0, fmt.Errorf("failed to read last offset: %w", err)
 	}
 
-	if startingOffset >= lastOffset {
-		return 0, nil
-	}
-
-	_, err = conn.Seek(cfg.StartingOffset, kafka.SeekAbsolute)
+	_, err = conn.Seek(firstOffset, kafka.SeekAbsolute)
 	if err != nil {
 		return 0, fmt.Errorf("failed to seek to start offset: %w", err)
 	}
 
-	fmt.Printf("Consuming partition %d from offset %d until offset %d\n", p.ID, startingOffset, endingOffset)
-	fmt.Printf("Last offset is %d\n", lastOffset)
+	fmt.Printf("Consuming partition %d from offset %d until offset %d\n", p.ID, firstOffset, lastOffset)
 
 	count := 0
 	for {
@@ -78,7 +87,7 @@ func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup 
 				break
 			}
 
-			if msg.Offset >= endingOffset {
+			if msg.Offset >= lastOffset {
 				done = true
 				break
 			}
@@ -97,7 +106,7 @@ func consumePartition(ctx context.Context, cfg Config, p kafka.Partition, dedup 
 		}
 
 		currentOffset, _ := conn.Seek(0, kafka.SeekCurrent)
-		if currentOffset >= endingOffset || currentOffset >= (lastOffset-1) {
+		if currentOffset >= (lastOffset - 1) {
 			break
 		}
 	}
