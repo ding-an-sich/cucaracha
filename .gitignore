@@ -2,3 +2,4 @@ cucaracha
 .env
 *.test
 docker*
+cucaracha_results.*

@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
 )
 
 type Deduplicator struct {
+	mu   sync.Mutex
 	seen map[uint64][]Occurrence
 }
 
@@ -19,11 +21,13 @@ func NewDeduplicator() *Deduplicator {
 
 func (d *Deduplicator) Add(value []byte, partition int, offset int64, timestamp time.Time) {
 	hash := xxhash.Sum64(value)
+	d.mu.Lock()
 	d.seen[hash] = append(d.seen[hash], Occurrence{
 		Partition: partition,
 		Offset:    offset,
 		Timestamp: timestamp,
 	})
+	d.mu.Unlock()
 }
 
 func (d *Deduplicator) Results(cfg Config) Result {

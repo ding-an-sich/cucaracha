@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -39,13 +40,25 @@ func Consume(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, fmt.Errorf("failed to get partitions: %w", err)
 	}
 
-	count := 0
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(partitions))
+
 	for _, p := range partitions {
-		n, err := consumePartition(dialer, ctx, cfg, p, dedup)
-		if err != nil {
-			return Result{}, fmt.Errorf("failed to consume partition %d: %w", p.ID, err)
-		}
-		count += n
+		wg.Add(1)
+		go func(p kafka.Partition) {
+			defer wg.Done()
+			_, err := consumePartition(dialer, ctx, cfg, p, dedup)
+			if err != nil {
+				errCh <- fmt.Errorf("failed to consume partition %d: %w", p.ID, err)
+			}
+		}(p)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	if err := <-errCh; err != nil {
+		return Result{}, err
 	}
 
 	return dedup.Results(cfg), nil
