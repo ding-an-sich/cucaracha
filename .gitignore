@@ -3,3 +3,5 @@ cucaracha
 *.test
 docker*
 cucaracha_results.*
+
+*.prof
